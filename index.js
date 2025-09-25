@@ -1,5 +1,6 @@
 import readline from 'node:readline/promises'
 import { spawn } from 'child_process'
+import path from 'node:path'
 
 const rl = readline.createInterface({
     input: process.stdin,
@@ -30,6 +31,7 @@ function handleChildProcess(child) {
 }
 
 async function main() {
+
     while (true) {
         try {
             const inputCommand = await rl.question('zsh> ')
@@ -38,22 +40,30 @@ async function main() {
                 break
             }
 
+            if (command === 'cd') {
+                // const curDirectory = path.join(__dirname, args[0])
+                if (args.length === 1) {
+                    process.chdir(args[0])
+                }
+                continue
+            }
+
             const child = spawn(command, args);
             const result = await handleChildProcess(child)
-            console.log(`--- Child Process Finished ---`);
-            console.log(`Exit Code: ${result.code}`);
+            // console.log(`--- Child Process Finished ---`);
+            // console.log(`Exit Code: ${result.code}`);
 
             if (result.stdout) {
-                console.log('\n--- STDOUT ---');
+                // console.log('\n--- STDOUT ---');
                 console.log(result.stdout);
             }
 
             if (result.stderr) {
-                console.log('\n--- STDERR ---');
+                // console.log('\n--- STDERR ---');
                 console.log(result.stderr);
             }
         } catch (error) {
-            console.error(error)
+            console.error(error.message)
         }
 
     }
