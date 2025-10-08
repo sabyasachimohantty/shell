@@ -1,34 +1,37 @@
 import readline from 'node:readline/promises'
 import { spawn } from 'child_process'
 import { pipeline } from 'node:stream/promises'
+import path from 'node:path'
+import fs from 'fs/promises'
 
-const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-})
+const HISTORY_FILE = '.zsh_history'
 
-// function handleChildProcess(child) {
-//     return new Promise((resolve, reject) => {
-//         let stdout = ''
-//         let stderr = ''
+const currentDirectoryPath = process.cwd()
+let currentDirectoryName = path.basename(currentDirectoryPath)
 
-//         child.stdout.on('data', (data) => {
-//             stdout += data.toString()
-//         })
+let activeChildProcesses = []
+let history = []
 
-//         child.stderr.on('data', (data) => {
-//             stderr += data.toString()
-//         })
+async function saveHistory() {
+    try {
+        await fs.writeFile(HISTORY_FILE, history.reverse().join('\n'), 'utf-8')
+    } catch (error) {
+        console.error('Error saving history file: ', error)
+    }
+}
 
-//         child.on('error', (error) => {
-//             reject(error)
-//         })
-
-//         child.on('close', (code) => {
-//             resolve({ code, stdout, stderr })
-//         })
-//     })
-// }
+async function loadHistory() {
+    try {
+        const data = (await fs.readFile(HISTORY_FILE, 'utf-8')).trim()
+        history = data.split('\n')
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return
+        }
+        
+        throw new Error(`Error loading history file : ${error.message}`)
+    }
+}
 
 async function runPipeline(commands) {
     if (commands.length === 0) {
@@ -40,15 +43,34 @@ async function runPipeline(commands) {
     let lastProcess;
 
     try {
-        
-        previousProcess = spawn(commands[0].name, commands[0].args)
+
+        previousProcess = await new Promise((resolve, reject) => {
+            const child = spawn(commands[0].name, commands[0].args)
+
+            child.on('error', (error) => {
+                reject(new Error(`Failed to start command '${commands[0].name}': ${error.message}`));
+            })
+
+            resolve(child)
+        })
+        activeChildProcesses.push(previousProcess)
 
         previousProcess.stderr.pipe(process.stderr)
 
         for (let i = 1; i < commands.length; i++) {
             const currentCommand = commands[i]
-            const currentProcess = spawn(currentCommand.name, currentCommand.args)
-            
+            const currentProcess = await new Promise((resolve, reject) => {
+                const child = spawn(currentCommand.name, currentCommand.args)
+
+                child.on('error', (error) => {
+                    reject(new Error(`Failed to start command '${commands[0].name}': ${error.message}`));
+                })
+
+                resolve(child)
+            })
+
+            activeChildProcesses.push(currentProcess)
+
             currentProcess.stderr.pipe(process.stderr)
 
             await pipeline(previousProcess.stdout, currentProcess.stdin)
@@ -62,7 +84,7 @@ async function runPipeline(commands) {
             finalOutput += chunk.toString()
         }
 
-        const exitCode = await new Promise((resolve, reject) => {
+        await new Promise((resolve, reject) => {
             lastProcess.on('close', (code) => {
                 if (code != 0) {
                     reject(new Error(`Command exited with non-zero code: ${code}`))
@@ -76,60 +98,93 @@ async function runPipeline(commands) {
 
     } catch (error) {
         throw error
+    } finally {
+        activeChildProcesses = []
     }
 }
+
 
 async function main() {
+    await loadHistory()
 
-    while (true) {
-        try {
-            const input = await rl.question('zsh> ')
-            let commands = []
-            input.trim().split('|').forEach((val) => {
-                const [name, ...args] = val.trim().split(' ')
-                commands.push({name, args})
-            })
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        prompt: `-(${currentDirectoryName})- zsh> `,
+        history: history.reverse(),
+        historySize: 100,
+    })
 
-            if (commands[0].name === 'exit') {
-                break
+    process.on('SIGINT', () => {
+        console.log('^C')
+        activeChildProcesses.forEach((child) => {
+            if (!child.killed) {
+                child.kill('SIGINT')
             }
+        })
 
-            if (commands[0].name === 'cd') {
-                process.chdir(commands[0].args[0])
-                continue
-            }
-            
-            const result = await runPipeline(commands)
-            console.log(result)
+        activeChildProcesses = []
+        rl.prompt()
+    })
 
-            // const [command, ...args] = inputCommand.split(' ')
-            // if (command === 'exit') {
-            //     break
-            // }
+    rl.on('SIGINT', () => {
+        console.log('^C')
+        rl.prompt();
+    });
 
-            // if (command === 'cd') {
-            //     if (args.length === 1) {
-            //         process.chdir(args[0])
-            //     }
-            //     continue
-            // }
+    // main loop
+    rl.prompt()
+    rl.on('line', async (line) => {
+        const input = line.trim()
 
-            // const child = spawn(command, args);
-            // const result = await handleChildProcess(child)
-
-            // if (result.stdout) {
-            //     console.log(result.stdout);
-            // }
-
-            // if (result.stderr) {
-            //     console.log(result.stderr);
-            // }
-        } catch (error) {
-            console.error(error.message)
+        if (input === '') {
+            rl.prompt()
+            return
         }
 
-    }
+        if (input === 'exit') {
+            rl.close()
+            return
+        }
+
+        if (input === 'history') {
+            history.toReversed().forEach((val, ind) => {
+                console.log(`${ind + 1}. ${val}`)
+            })
+            rl.prompt()
+            return
+        }
+
+        let commands = []
+        input.trim().split('|').forEach((val) => {
+            const [name, ...args] = val.trim().split(' ')
+            commands.push({ name, args })
+        })
+
+
+        try {
+            if (commands[0].name === 'cd') {
+                process.chdir(commands[0].args[0])
+                currentDirectoryName = path.basename(process.cwd())
+                rl.setPrompt(`-(${currentDirectoryName})- zsh> `)
+            } else {
+                const result = await runPipeline(commands)
+                console.log(result)
+            }
+        } catch (error) {
+            console.log(error)
+        }
+
+        rl.prompt()
+    })
+
+    rl.on('close', async () => {
+        await saveHistory()
+        process.exit(0)
+    })
+
 }
 
-await main()
-rl.close()
+
+// Main function to run the shell
+main()
