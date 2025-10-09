@@ -28,7 +28,7 @@ async function loadHistory() {
         if (error.code === 'ENOENT') {
             return
         }
-        
+
         throw new Error(`Error loading history file : ${error.message}`)
     }
 }
@@ -103,6 +103,27 @@ async function runPipeline(commands) {
     }
 }
 
+function completer(line) {
+    const completions = [
+        // File management
+        'ls', 'cp', 'mv', 'rm', 'mkdir', 'touch', 'rmdir', 'cd', 'pwd', 'exit',
+        // Text processing and viewing
+        'cat', 'grep', 'head', 'tail', 'less', 'more', 'wc', 'sort', 'sed', 'awk',
+        // System information and processes
+        'ps', 'top', 'kill', 'df', 'du', 'find', 'env', 'whoami',
+        // Networking
+        'ping', 'curl', 'wget', 'ssh', 'scp',
+        // Compression
+        'tar', 'gzip', 'gunzip', 'zip', 'unzip',
+        // Permissions and ownership
+        'chmod', 'chown', 'chgrp',
+        // General utilities
+        'echo', 'man', 'history', 'alias'
+    ]
+    const hits = completions.filter((c) => c.startsWith(line))
+    return [hits, line]
+}
+
 
 async function main() {
     await loadHistory()
@@ -113,6 +134,7 @@ async function main() {
         prompt: `-(${currentDirectoryName})- zsh> `,
         history: history.reverse(),
         historySize: 100,
+        completer: completer
     })
 
     process.on('SIGINT', () => {
